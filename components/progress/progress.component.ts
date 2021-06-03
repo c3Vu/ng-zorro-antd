@@ -14,10 +14,11 @@ import {
   OnInit,
   Optional,
   SimpleChanges,
+  TemplateRef,
   ViewEncapsulation
 } from '@angular/core';
 import { NzConfigKey, NzConfigService, WithConfig } from 'ng-zorro-antd/core/config';
-import { NgStyleInterface, NumberInput } from 'ng-zorro-antd/core/types';
+import { NgStyleInterface, NumberInput, NzSafeAny } from 'ng-zorro-antd/core/types';
 import { InputNumber, isNotNil } from 'ng-zorro-antd/core/util';
 import { Subject } from 'rxjs';
 import { takeUntil } from 'rxjs/operators';
@@ -63,8 +64,8 @@ const defaultFormatter: NzProgressFormatter = (p: number): string => `${p}%`;
           <i nz-icon [nzType]="icon"></i>
         </ng-container>
         <ng-template #formatTemplate>
-          <ng-container *nzStringTemplateOutlet="formatter; context: { $implicit: nzPercent }; let formatter">
-            {{ formatter(nzPercent) }}
+          <ng-container *nzStringTemplateOutlet="formatter; context: formatterContext; let value">
+            {{ value }}
           </ng-container>
         </ng-template>
       </span>
@@ -205,6 +206,14 @@ export class NzProgressComponent implements OnChanges, OnInit, OnDestroy {
 
   get formatter(): NzProgressFormatter {
     return this.nzFormat || defaultFormatter;
+  }
+
+  get formatterContext(): NzSafeAny {
+    if (this.formatter instanceof TemplateRef) {
+      return { $implicit: this.nzPercent };
+    } else {
+      return this.nzPercent;
+    }
   }
 
   get status(): NzProgressStatusType {

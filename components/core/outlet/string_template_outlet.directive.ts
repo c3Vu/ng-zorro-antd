@@ -3,92 +3,145 @@
  * found in the LICENSE file at https://github.com/NG-ZORRO/ng-zorro-antd/blob/master/LICENSE
  */
 
-import { Directive, EmbeddedViewRef, Input, OnChanges, SimpleChange, SimpleChanges, TemplateRef, ViewContainerRef } from '@angular/core';
+import {
+  ComponentFactoryResolver,
+  ComponentRef,
+  Directive,
+  EmbeddedViewRef,
+  InjectionToken,
+  Injector,
+  Input,
+  OnChanges,
+  SimpleChanges,
+  TemplateRef,
+  Type,
+  ViewContainerRef
+} from '@angular/core';
 import { NzSafeAny } from 'ng-zorro-antd/core/types';
 
 @Directive({
   selector: '[nzStringTemplateOutlet]',
   exportAs: 'nzStringTemplateOutlet'
 })
-export class NzStringTemplateOutletDirective<_T = unknown> implements OnChanges {
-  private embeddedViewRef: EmbeddedViewRef<NzSafeAny> | null = null;
-  private context = new NzStringTemplateOutletContext();
-  @Input() nzStringTemplateOutletContext: NzSafeAny | null = null;
-  @Input() nzStringTemplateOutlet: NzSafeAny | TemplateRef<NzSafeAny> = null;
+export class NzStringTemplateOutletDirective<T> implements OnChanges {
+  @Input('nzStringTemplateOutletContext') context?: T;
+  @Input('nzStringTemplateOutlet') content: NzSafeAny = '';
 
-  static ngTemplateContextGuard<T>(_dir: NzStringTemplateOutletDirective<T>, _ctx: NzSafeAny): _ctx is NzStringTemplateOutletContext {
-    return true;
-  }
+  componentRef?: ComponentRef<unknown>;
+  templateViewRef?: EmbeddedViewRef<T>;
 
-  private recreateView(): void {
-    this.viewContainer.clear();
-    const isTemplateRef = this.nzStringTemplateOutlet instanceof TemplateRef;
-    const templateRef = (isTemplateRef ? this.nzStringTemplateOutlet : this.templateRef) as NzSafeAny;
-    this.embeddedViewRef = this.viewContainer.createEmbeddedView(
-      templateRef,
-      isTemplateRef ? this.nzStringTemplateOutletContext : this.context
-    );
-  }
+  constructor(private viewContainerRef: ViewContainerRef, private templateRef: TemplateRef<NzSafeAny>, private injector: Injector) {}
 
   private updateContext(): void {
-    const isTemplateRef = this.nzStringTemplateOutlet instanceof TemplateRef;
-    const newCtx = isTemplateRef ? this.nzStringTemplateOutletContext : this.context;
-    const oldCtx = this.embeddedViewRef!.context as NzSafeAny;
+    const newCtx = this.getContext();
+    const oldCtx = this.templateViewRef?.context || {};
     if (newCtx) {
-      for (const propName of Object.keys(newCtx)) {
-        oldCtx[propName] = newCtx[propName];
-      }
+      Object.keys(oldCtx).forEach(propName => {
+        delete oldCtx[propName as keyof {}];
+      });
+      Object.keys(newCtx).forEach(propName => {
+        oldCtx[propName as keyof {}] = newCtx[propName as keyof {}];
+      });
     }
   }
 
-  constructor(private viewContainer: ViewContainerRef, private templateRef: TemplateRef<NzSafeAny>) {}
-
-  ngOnChanges(changes: SimpleChanges): void {
-    const { nzStringTemplateOutletContext, nzStringTemplateOutlet } = changes;
-    const shouldRecreateView = (): boolean => {
-      let shouldOutletRecreate = false;
-      if (nzStringTemplateOutlet) {
-        if (nzStringTemplateOutlet.firstChange) {
-          shouldOutletRecreate = true;
-        } else {
-          const isPreviousOutletTemplate = nzStringTemplateOutlet.previousValue instanceof TemplateRef;
-          const isCurrentOutletTemplate = nzStringTemplateOutlet.currentValue instanceof TemplateRef;
-          shouldOutletRecreate = isPreviousOutletTemplate || isCurrentOutletTemplate;
-        }
+  ngOnChanges({ content }: SimpleChanges): void {
+    // avoid recreating when only context is changed
+    if (!content) {
+      if (isComponent(this.content) && this.componentRef) {
+        // the injected context of the component is already bound with the context
+        return;
+      } else if (isTemplate(this.content) && this.templateViewRef) {
+        this.updateContext();
+        return;
       }
-      const hasContextShapeChanged = (ctxChange: SimpleChange): boolean => {
-        const prevCtxKeys = Object.keys(ctxChange.previousValue || {});
-        const currCtxKeys = Object.keys(ctxChange.currentValue || {});
-        if (prevCtxKeys.length === currCtxKeys.length) {
-          for (const propName of currCtxKeys) {
-            if (prevCtxKeys.indexOf(propName) === -1) {
-              return true;
-            }
-          }
-          return false;
-        } else {
-          return true;
-        }
-      };
-      const shouldContextRecreate = nzStringTemplateOutletContext && hasContextShapeChanged(nzStringTemplateOutletContext);
-      return shouldContextRecreate || shouldOutletRecreate;
-    };
-
-    if (nzStringTemplateOutlet) {
-      this.context.$implicit = nzStringTemplateOutlet.currentValue;
-    }
-
-    const recreateView = shouldRecreateView();
-    if (recreateView) {
-      /** recreate view when context shape or outlet change **/
-      this.recreateView();
-    } else {
-      /** update context **/
+    } else if (
+      !content?.firstChange &&
+      this.templateViewRef &&
+      (isFunction(this.content) || isOtherType(this.content)) &&
+      (isFunction(content.previousValue) || isOtherType(content.previousValue))
+    ) {
       this.updateContext();
+      return;
+    }
+    this.viewContainerRef.clear();
+    if (isComponent(this.content)) {
+      this.createComponentOutlet();
+    } else {
+      this.createTemplateOutlet();
+    }
+  }
+
+  createComponentOutlet(): void {
+    const context = this.context || {};
+    const injector = Injector.create({
+      parent: this.injector,
+      providers: [
+        {
+          provide: NZ_OUTLET_CONTEXT,
+          useValue: new Proxy(context, {
+            get: (_, key) => context[key as keyof {}]
+          })
+        }
+      ]
+    });
+    const factory = injector.get(ComponentFactoryResolver).resolveComponentFactory((this.content as NzComponentOutlet<T>).component);
+    this.componentRef = this.viewContainerRef.createComponent(factory, 0, injector);
+  }
+
+  createTemplateOutlet(): void {
+    this.templateViewRef = this.viewContainerRef.createEmbeddedView(this.getTemplate(), this.getContext());
+  }
+
+  getTemplate(): TemplateRef<NzSafeAny> {
+    if (isTemplate(this.content)) {
+      return this.content;
+    } else {
+      return this.templateRef;
+    }
+  }
+
+  getContext(): {} {
+    if (isTemplate(this.content)) {
+      return this.context || {};
+    } else if (isFunction(this.content)) {
+      const val = this.content(this.context as T);
+      return {
+        $implicit: val,
+        nzStringTemplateOutlet: val
+      };
+    } else {
+      return {
+        $implicit: this.content,
+        nzStringTemplateOutlet: this.content
+      };
     }
   }
 }
-
 export class NzStringTemplateOutletContext {
   public $implicit: NzSafeAny;
 }
+export class NzComponentOutlet<T> {
+  component: Type<T>;
+  constructor(component: Type<T>) {
+    this.component = component;
+  }
+}
+
+function isTemplate(obj: NzSafeAny): obj is TemplateRef<NzSafeAny> {
+  return obj instanceof TemplateRef;
+}
+
+function isComponent(obj: NzSafeAny): obj is NzComponentOutlet<NzSafeAny> {
+  return obj instanceof NzComponentOutlet;
+}
+
+function isFunction(obj: NzSafeAny): obj is (context: NzSafeAny) => NzSafeAny {
+  return typeof obj === 'function';
+}
+
+function isOtherType(obj: NzSafeAny): boolean {
+  return !isTemplate(obj) && !isComponent(obj) && !isFunction(obj);
+}
+
+export const NZ_OUTLET_CONTEXT = new InjectionToken<object>('Context From NzStringTemplateOutlet');
